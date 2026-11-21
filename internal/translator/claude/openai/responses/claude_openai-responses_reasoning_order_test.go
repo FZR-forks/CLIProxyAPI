@@ -124,6 +124,90 @@ func TestConvertOpenAIResponsesRequestToClaude_NonThinkingBlocksSeparateReasonin
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToClaude_KeepsSameResponseThinkingBlocks(t *testing.T) {
+	reasoningRaw, reasoningSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-reasoning")
+	updateRaw, updateSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-update")
+
+	// One Claude response returned a reasoning block, a progress-update block
+	// and a tool call; the response translator named them rs_<id>_<index>.
+	raw := responsesRequestFromItems(
+		responsesReasoningItemWithID("rs_msg_01Same_0", reasoningRaw, ""),
+		responsesReasoningItemWithID("rs_msg_01Same_1", updateRaw, ""),
+		responsesFunctionCallItem("call_same", "same_tool"),
+		responsesFunctionCallOutputItem("call_same", "done"),
+	)
+
+	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	content := ojson.GetBytesNoCopy(out, "messages.0.content").Array()
+	wantTypes := []string{"thinking", "thinking", "tool_use"}
+	if len(content) != len(wantTypes) {
+		t.Fatalf("assistant content count = %d, want %d. Output: %s", len(content), len(wantTypes), out)
+	}
+	for index, wantType := range wantTypes {
+		if got := content[index].Get("type").String(); got != wantType {
+			t.Fatalf("assistant content[%d].type = %q, want %q. Output: %s", index, got, wantType, out)
+		}
+	}
+	if got := content[0].Get("signature").String(); got != reasoningSignature {
+		t.Fatalf("first thinking signature = %q, want reasoning signature %q", got, reasoningSignature)
+	}
+	if got := content[1].Get("signature").String(); got != updateSignature {
+		t.Fatalf("second thinking signature = %q, want progress-update signature %q", got, updateSignature)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_CollapsesThinkingFromDifferentResponses(t *testing.T) {
+	firstRaw, _ := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-first")
+	updateRaw, _ := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-update")
+	laterRaw, laterSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-later")
+
+	// A later response's thinking must not stay adjacent to an earlier
+	// response's, so the earlier run is replaced as a whole.
+	raw := responsesRequestFromItems(
+		responsesReasoningItemWithID("rs_msg_01First_0", firstRaw, ""),
+		responsesReasoningItemWithID("rs_msg_01First_1", updateRaw, ""),
+		responsesReasoningItemWithID("rs_msg_01Later_0", laterRaw, ""),
+		responsesFunctionCallItem("call_later", "later_tool"),
+		responsesFunctionCallOutputItem("call_later", "done"),
+	)
+
+	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	content := ojson.GetBytesNoCopy(out, "messages.0.content").Array()
+	wantTypes := []string{"thinking", "tool_use"}
+	if len(content) != len(wantTypes) {
+		t.Fatalf("assistant content count = %d, want %d. Output: %s", len(content), len(wantTypes), out)
+	}
+	for index, wantType := range wantTypes {
+		if got := content[index].Get("type").String(); got != wantType {
+			t.Fatalf("assistant content[%d].type = %q, want %q. Output: %s", index, got, wantType, out)
+		}
+	}
+	if got := content[0].Get("signature").String(); got != laterSignature {
+		t.Fatalf("thinking signature = %q, want latest response signature %q. Output: %s", got, laterSignature, out)
+	}
+}
+
+func TestClaudeResponseIDFromReasoningItemID(t *testing.T) {
+	cases := map[string]string{
+		"rs_msg_011ChF1ocEToPEeFhKVmgRWx_0": "msg_011ChF1ocEToPEeFhKVmgRWx",
+		"rs_resp_1_12":                      "resp_1",
+		"rs_msg":                            "",
+		"rs__1":                             "",
+		"rs_msg_x":                          "",
+		"msg_1_0":                           "",
+		"":                                  "",
+	}
+	for itemID, want := range cases {
+		if got := claudeResponseIDFromReasoningItemID(itemID); got != want {
+			t.Errorf("claudeResponseIDFromReasoningItemID(%q) = %q, want %q", itemID, got, want)
+		}
+	}
+}
+
+func responsesReasoningItemWithID(id, signature, text string) string {
+	return fmt.Sprintf(`{"type":"reasoning","id":%q,"encrypted_content":%q,"summary":[{"type":"summary_text","text":%q}]}`, id, signature, text)
+}
+
 func responsesReasoningItem(signature, text string) string {
 	return fmt.Sprintf(`{"type":"reasoning","encrypted_content":%q,"summary":[{"type":"summary_text","text":%q}]}`, signature, text)
 }
