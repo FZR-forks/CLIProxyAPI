@@ -1088,7 +1088,15 @@ func buildClaudeConfigModels(entry *config.ClaudeKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return buildConfigModels(entry.Models, "anthropic", "claude", "claude")
+	models := buildConfigModels(entry.Models, "anthropic", "claude", "claude")
+	for _, model := range models {
+		// Configured routes shadow static metadata during translation. Retain the
+		// known output ceiling so they do not fall back to a smaller token limit.
+		if known := registry.LookupStaticModelInfoByChannel(model.MetadataModelID, "claude"); known != nil {
+			model.MaxCompletionTokens = known.MaxCompletionTokens
+		}
+	}
+	return models
 }
 
 func buildXAIConfigModels(entry *config.XAIKey) []*ModelInfo {
